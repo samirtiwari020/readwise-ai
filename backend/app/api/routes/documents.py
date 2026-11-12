@@ -1,16 +1,17 @@
+import asyncio
 import hashlib
 import re
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
-from app.core.database import get_db
-from app.db.models.document import Document, IngestionStatus
+from app.core.database import get_db, get_session_factory
+from app.db.models.document import Document, DocumentChunk, IngestionStatus
 from app.schemas.document import (
     DocumentDetailOut,
     DocumentListResponse,
@@ -18,6 +19,9 @@ from app.schemas.document import (
     DocumentStatusOut,
     DocumentUploadResponse,
 )
+from app.services.ingestion.pipeline import ingest_document
+from app.services.retrieval.embeddings import EmbeddingService, get_embedding_service
+from app.services.retrieval.vector_store import ChromaVectorStore, get_vector_store
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -95,10 +99,14 @@ async def _get_document_or_404(db: AsyncSession, document_id: uuid.UUID) -> Docu
     status_code=status.HTTP_201_CREATED,
 )
 async def upload_document(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+    embedding_service: EmbeddingService = Depends(get_embedding_service),
+    vector_store: ChromaVectorStore = Depends(get_vector_store),
 ) -> DocumentUploadResponse:
-    """Upload a PDF document, deduplicate via SHA-256, and queue it for ingestion."""
+    """Upload a PDF document, deduplicate via SHA-256, and trigger background ingestion."""
     if not (file.filename or "").lower().endswith(".pdf"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -144,11 +152,52 @@ async def upload_document(
         saved_path.unlink(missing_ok=True)
         raise
 
+    background_tasks.add_task(
+        ingest_document,
+        document.id,
+        session_factory,
+        embedding_service,
+        vector_store,
+    )
+
     return DocumentUploadResponse(
         document=DocumentOut.model_validate(document),
         deduplicated=False,
         message="PDF uploaded successfully and queued for ingestion.",
     )
+
+
+@router.post("/{document_id}/reingest", response_model=DocumentStatusOut)
+async def reingest_document(
+    document_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+    embedding_service: EmbeddingService = Depends(get_embedding_service),
+    vector_store: ChromaVectorStore = Depends(get_vector_store),
+) -> DocumentStatusOut:
+    """Re-queue an existing document for page-aware parsing and vector indexing."""
+    doc = await _get_document_or_404(db, document_id)
+    if doc.ingestion_status == IngestionStatus.PROCESSING.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Document ingestion is already in progress.",
+        )
+
+    doc.ingestion_status = IngestionStatus.PENDING.value
+    doc.pages_processed = 0
+    doc.error_message = None
+    await db.commit()
+    await db.refresh(doc)
+
+    background_tasks.add_task(
+        ingest_document,
+        doc.id,
+        session_factory,
+        embedding_service,
+        vector_store,
+    )
+    return DocumentStatusOut.model_validate(doc)
 
 
 @router.get("", response_model=DocumentListResponse)
@@ -177,6 +226,44 @@ async def get_document_status(
     return DocumentStatusOut.model_validate(doc)
 
 
+@router.get("/{document_id}/chunks")
+async def list_document_chunks(
+    document_id: uuid.UUID,
+    page: int | None = Query(default=None, ge=1),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Inspect indexed chunks for a document, optionally filtered by page number."""
+    await _get_document_or_404(db, document_id)
+    stmt = (
+        select(DocumentChunk)
+        .where(DocumentChunk.document_id == document_id)
+        .order_by(DocumentChunk.chunk_index)
+    )
+    if page is not None:
+        stmt = stmt.where(DocumentChunk.page_start <= page, DocumentChunk.page_end >= page)
+    rows = (await db.scalars(stmt.offset(offset).limit(limit))).all()
+    return {
+        "document_id": str(document_id),
+        "chunks": [
+            {
+                "id": str(c.id),
+                "chroma_id": c.chroma_id,
+                "chunk_index": c.chunk_index,
+                "page_start": c.page_start,
+                "page_end": c.page_end,
+                "chapter": c.chapter,
+                "section": c.section,
+                "chunk_type": c.chunk_type,
+                "token_count": c.token_count,
+                "content": c.content,
+            }
+            for c in rows
+        ],
+    }
+
+
 @router.get("/{document_id}/file")
 async def get_document_file(
     document_id: uuid.UUID, db: AsyncSession = Depends(get_db)
@@ -199,12 +286,14 @@ async def get_document_file(
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_document(
-    document_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    vector_store: ChromaVectorStore = Depends(get_vector_store),
 ) -> None:
-    """Delete a document record, its relational chunks, and its stored PDF file."""
+    """Delete a document record, its relational chunks, Chroma vectors, and PDF file."""
     doc = await _get_document_or_404(db, document_id)
     file_path = Path(doc.file_path)
     await db.delete(doc)
     await db.commit()
+    await asyncio.to_thread(vector_store.delete_document_chunks, str(document_id))
     file_path.unlink(missing_ok=True)
-

@@ -8,10 +8,12 @@ def _compute_progress_percent(status: str, pages_processed: int, page_count: int
     """Compute bounded 0-100 ingestion progress percentage."""
     if status == "completed":
         return 100.0
+    if status in {"pending", "failed"}:
+        return 0.0
     if not page_count or page_count <= 0:
         return 0.0
     pct = (pages_processed / page_count) * 100.0
-    return round(min(max(pct, 0.0), 100.0), 1)
+    return round(min(max(pct, 0.0), 99.9), 1)
 
 
 class TocEntry(BaseModel):

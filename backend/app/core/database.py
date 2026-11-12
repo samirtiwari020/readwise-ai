@@ -32,6 +32,11 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
+    """Return the async session maker for background tasks."""
+    return AsyncSessionLocal
+
+
 async def check_db_connection() -> bool:
     """Verify PostgreSQL connectivity with a lightweight SELECT 1 query."""
     try:

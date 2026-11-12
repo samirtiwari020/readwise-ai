@@ -9,21 +9,32 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+import pymupdf
 from app.core.config import get_settings
-from app.core.database import Base, get_db
+from app.core.database import Base, get_db, get_session_factory
 from app.main import create_app
+from app.services.retrieval.embeddings import get_embedding_service
+from app.services.retrieval.vector_store import _cached_vector_store
+
+
+class _StubEmbeddingService:
+    """Fast deterministic embedding stub for Phase 2 API CRUD tests."""
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [[0.1] * 8 for _ in texts]
+
+    def embed_query(self, query: str) -> list[float]:
+        return [0.1] * 8
 
 
 def _make_minimal_pdf_bytes(marker: str = "Readwise AI Test Page") -> bytes:
     """Create a valid minimal PDF byte payload for upload integration tests."""
-    return (
-        f"%PDF-1.4\n"
-        f"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n"
-        f"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n"
-        f"3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >> endobj\n"
-        f"% {marker}\n"
-        f"%%EOF\n"
-    ).encode("utf-8")
+    doc = pymupdf.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((50, 100), marker, fontsize=12)
+    data = doc.tobytes()
+    doc.close()
+    return data
 
 
 def _test_db_url(base_url: str) -> str:
@@ -48,6 +59,7 @@ def _ensure_test_database(async_test_url: str) -> None:
 async def api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[AsyncClient]:
     """Provide an isolated HTTP client backed by readwise_ai_test PostgreSQL database."""
     get_settings.cache_clear()
+    _cached_vector_store.cache_clear()
     base_settings = get_settings()
     test_url = _test_db_url(base_settings.database_url)
     _ensure_test_database(test_url)
@@ -75,11 +87,14 @@ async def api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIt
             yield session
 
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_session_factory] = lambda: test_session_factory
+    app.dependency_overrides[get_embedding_service] = _StubEmbeddingService
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         yield client
 
     app.dependency_overrides.clear()
+    _cached_vector_store.cache_clear()
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
     await test_engine.dispose()
@@ -149,7 +164,8 @@ async def test_document_upload_validation_dedup_and_crud(
 
     status_resp = await api_client.get(f"/api/v1/documents/{doc_id}/status")
     assert status_resp.status_code == 200
-    assert status_resp.json()["progress_percent"] == 0.0
+    assert status_resp.json()["ingestion_status"] == "completed"
+    assert status_resp.json()["progress_percent"] == 100.0
 
     file_resp = await api_client.get(f"/api/v1/documents/{doc_id}/file")
     assert file_resp.status_code == 200
