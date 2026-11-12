@@ -1,1 +1,118 @@
 @import "tailwindcss";
+
+@layer base {
+  :root {
+    font-family: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+
+  h1, h2, h3, .font-display {
+    font-family: "Plus Jakarta Sans", "Inter", ui-sans-serif, system-ui, sans-serif;
+  }
+
+  code, pre, .font-mono {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+}
+
+/* Subtle custom scrollbars for split research panes */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.45);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.65);
+}
+
+/* Clean Markdown prose inside assistant cards */
+.prose-research {
+  font-size: 0.9375rem;
+  line-height: 1.65;
+  color: #1e293b;
+}
+.prose-research p {
+  margin-bottom: 0.75rem;
+}
+.prose-research p:last-child {
+  margin-bottom: 0;
+}
+.prose-research ul, .prose-research ol {
+  margin: 0.5rem 0 0.75rem 1.25rem;
+  padding-left: 0.25rem;
+}
+.prose-research ul {
+  list-style-type: disc;
+}
+.prose-research ol {
+  list-style-type: decimal;
+}
+.prose-research li {
+  margin-bottom: 0.3rem;
+}
+.prose-research h1, .prose-research h2, .prose-research h3 {
+  font-weight: 600;
+  color: #0f172a;
+  margin-top: 1rem;
+  margin-bottom: 0.45rem;
+}
+.prose-research h2 {
+  font-size: 1.05rem;
+}
+.prose-research h3 {
+  font-size: 0.975rem;
+}
+.prose-research table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.85rem 0;
+  font-size: 0.85rem;
+  border-radius: 0.65rem;
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+}
+.prose-research th {
+  background: #f8fafc;
+  text-align: left;
+  font-weight: 600;
+  color: #0f172a;
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid #e2e8f0;
+}
+.prose-research td {
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid #f1f5f9;
+  vertical-align: top;
+}
+.prose-research tr:last-child td {
+  border-bottom: none;
+}
+.prose-research pre {
+  background: #0f172a;
+  color: #f8fafc;
+  padding: 0.85rem 1rem;
+  border-radius: 0.75rem;
+  overflow-x: auto;
+  margin: 0.75rem 0;
+  font-size: 0.82rem;
+}
+.prose-research :not(pre) > code {
+  background: #f1f5f9;
+  color: #4338ca;
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.375rem;
+  font-size: 0.84em;
+}
+.prose-research blockquote {
+  border-left: 3px solid #6366f1;
+  background: #f8fafc;
+  padding: 0.5rem 0.85rem;
+  margin: 0.75rem 0;
+  color: #475569;
+  border-radius: 0 0.5rem 0.5rem 0;
+}
